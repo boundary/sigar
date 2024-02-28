@@ -886,7 +886,6 @@ sigar_net_connection_listeners_get(sigar_t *sigar,
 {
     int status;
     sigar_net_connection_walker_t walker;
-
     sigar_net_connection_list_create(connlist);
 
     walker.sigar = sigar;
@@ -1812,6 +1811,10 @@ int sigar_net_interface_config_get(sigar_t *sigar, const char *name,
 
 #if defined(HAVE_LIBDLPI_H)
         hwaddr_libdlpi_lookup(sigar, ifconfig);
+#elif defined(_AIX) || defined(__osf__)
+        hwaddr_aix_lookup(sigar, ifconfig);
+        SIGAR_SSTRCPY(ifconfig->type,
+                      SIGAR_NIC_ETHERNET);
 #elif defined(SIOCGIFHWADDR)
         if (!ioctl(sock, SIOCGIFHWADDR, &ifr)) {
             get_interface_type(ifconfig,
@@ -1820,10 +1823,6 @@ int sigar_net_interface_config_get(sigar_t *sigar, const char *name,
                                       ifr.ifr_hwaddr.sa_data,
                                       IFHWADDRLEN);
         }
-#elif defined(_AIX) || defined(__osf__)
-        hwaddr_aix_lookup(sigar, ifconfig);
-        SIGAR_SSTRCPY(ifconfig->type,
-                      SIGAR_NIC_ETHERNET);
 #else
         hwaddr_arp_lookup(ifconfig, sock);
         SIGAR_SSTRCPY(ifconfig->type,

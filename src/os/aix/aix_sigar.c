@@ -17,6 +17,8 @@
  */
 
 /* pull in time.h before resource.h does w/ _KERNEL */
+#include <stdlib.h>
+#include <fcntl.h>
 #include <sys/time.h>
 #define _KERNEL 1
 #include <sys/file.h>     /* for struct file */
@@ -31,6 +33,7 @@
 #include <nlist.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <utmp.h>
 #include <sys/protosw.h>
 #include <libperfstat.h>
@@ -76,6 +79,67 @@
 #include <sys/ioctl.h>
 #include <netinet/in6_var.h>
 
+#define PROCSIZE        (sizeof(struct procentry64))
+#define PROCINFO_INCR   (256)
+#define FDSINFOSIZE     (sizeof(struct fdsinfo64))
+typedef u_longlong_t    KA_T;
+
+#ifdef __64BIT__
+#define file64 file
+#define socket64 socket
+#define protosw64 protosw
+#define inpcb64 inpcb
+#define tcpcb64 tcpcb
+#else
+  struct file64 {
+    int f_flag;
+    int f_count;
+    int f_options;
+    int f_type;
+    u_longlong_t f_data;
+ };
+ struct socket64 {
+    short   so_type;                 /* generic type, see socket.h */
+    short   so_options;              /* from socket call, see socket.h */
+    ushort  so_linger;               /* time to linger while closing */
+    short   so_state;                /* internal state flags SS_*, below */
+    u_longlong_t so_pcb;             /* protocol control block */
+    u_longlong_t so_proto;           /* protocol handle */
+ };
+ struct protosw64 {
+    short   pr_type;                 /* socket type used for */
+    u_longlong_t pr_domain;          /* domain protocol a member of */
+    short   pr_protocol;             /* protocol number */
+    short   pr_flags;                /* see below */
+ };
+ struct inpcb64 {
+    u_longlong_t inp_next,inp_prev;
+                                     /* pointers to other pcb's */
+    u_longlong_t inp_head;           /* pointer back to chain of inpcb's
+                                       for this protocol */
+    u_int32_t inp_iflowinfo;         /* input flow label */
+    u_short inp_fport;               /* foreign port */
+    u_int16_t inp_fatype;            /* foreign address type */
+    union   in_addr_6 inp_faddr_6;   /* foreign host table entry */
+    u_int32_t inp_oflowinfo;         /* output flow label */
+    u_short inp_lport;               /* local port */
+    u_int16_t inp_latype;            /* local address type */
+    union   in_addr_6 inp_laddr_6;   /* local host table entry */
+    u_longlong_t inp_socket;         /* back pointer to socket */
+    u_longlong_t inp_ppcb;           /* pointer to per-protocol pcb */
+    u_longlong_t space_rt;
+    struct  sockaddr_in6 spare_dst;
+    u_longlong_t inp_ifa;            /* interface address to use */
+    int     inp_flags;               /* generic IP/datagram flags */
+};
+struct tcpcb64 {
+    u_longlong_t seg__next;
+    u_longlong_t seg__prev;
+    short   t_state;                 /* state of this connection */
+};
+
+#endif
+
 /* for getkerninfo */
 #include <sys/kinfo.h>
 /* not defined in aix 4.3 */
@@ -102,20 +166,20 @@ static int get_koffsets(sigar_t *sigar)
 {
     int i;
     /* see man knlist and nlist.h */
-    struct nlist klist[] = {
-        {"avenrun", 0, 0, 0, 0, 0}, /* KOFFSET_LOADAVG */
-        {"v", 0, 0, 0, 0, 0}, /* KOFFSET_VAR */
-        {"sysinfo", 0, 0, 0, 0, 0}, /* KOFFSET_SYSINFO */
-        {"ifnet", 0, 0, 0, 0, 0}, /* KOFFSET_IFNET */
-        {"vmminfo", 0, 0, 0, 0, 0}, /* KOFFSET_VMINFO */
-        {"cpuinfo", 0, 0, 0, 0, 0}, /* KOFFSET_CPUINFO */
-        {"tcb", 0, 0, 0, 0, 0}, /* KOFFSET_TCB */
-        {"arptabsize", 0, 0, 0, 0, 0}, /* KOFFSET_ARPTABSIZE */
-        {"arptabp", 0, 0, 0, 0, 0}, /* KOFFSET_ARPTABP */
-        {NULL, 0, 0, 0, 0, 0}
+    struct nlist64 klist[] = {
+        {{"avenrun"}, 0, 0, {0}, 0, 0}, /* KOFFSET_LOADAVG */
+        {{"v"}, 0, 0, {0}, 0, 0}, /* KOFFSET_VAR */
+        {{"sysinfo"}, 0, 0, {0}, 0, 0}, /* KOFFSET_SYSINFO */
+        {{"ifnet"}, 0, 0, {0}, 0, 0}, /* KOFFSET_IFNET */
+        {{"vmminfo"}, 0, 0, {0}, 0, 0}, /* KOFFSET_VMINFO */
+        {{"cpuinfo"}, 0, 0, {0}, 0, 0}, /* KOFFSET_CPUINFO */
+        {{"tcb"}, 0, 0, {0}, 0, 0}, /* KOFFSET_TCB */
+        {{"arptabsize"}, 0, 0, {0}, 0, 0}, /* KOFFSET_ARPTABSIZE */
+        {{"arptabp"}, 0, 0, {0}, 0, 0}, /* KOFFSET_ARPTABP */
+        {{NULL}, 0, 0, {0}, 0, 0}
     };
 
-    if (knlist(klist,
+    if (knlist((struct nlist *)klist,
                sizeof(klist) / sizeof(klist[0]),
                sizeof(klist[0])) != 0)
     {
@@ -136,6 +200,25 @@ static int kread(sigar_t *sigar, void *data, int size, long offset)
     }
 
     if (lseek(sigar->kmem, offset, SEEK_SET) != offset) {
+        return errno;
+    }
+
+    if (read(sigar->kmem, data, size) != size) {
+        return errno;
+    }
+
+    return SIGAR_OK;
+}
+
+static int kread64(sigar_t *sigar, void *data, int size, KA_T offset)
+{
+    off64_t soff = 0;
+    if (sigar->kmem < 0) {
+        return SIGAR_EPERM_KMEM;
+    }
+
+    soff = lseek64(sigar->kmem, (off64_t)offset, SEEK_SET);
+    if (soff != offset) {
         return errno;
     }
 
@@ -251,7 +334,6 @@ char *sigar_os_error_string(sigar_t *sigar, int err)
 
 int sigar_mem_get(sigar_t *sigar, sigar_mem_t *mem)
 {
-    int status;
     perfstat_memory_total_t minfo;
     sigar_uint64_t kern;
 
@@ -1814,7 +1896,6 @@ SIGAR_DECLARE(int)
 	sigar_net_listeners_get(sigar_net_connection_walker_t *walker)
 {
 	int i, status;
-
 	status = sigar_net_connection_walk(walker);
 
 	if (status != SIGAR_OK) {
@@ -2051,15 +2132,50 @@ int sigar_arp_list_get(sigar_t *sigar,
     return status;
 }
 
-/* derived from pidentd's k_aix432.c */
+static struct procentry64 *
+read_process_table(int * num) {
+    size_t msz;
+    pid_t pid = 0;
+    struct procentry64 *processes = (struct procentry64 *)NULL;
+    struct procentry64 *p;
+    int Np = 0;          /* number of processes allocated in 'processes' */
+    int np = 0;          /* number of processes read into 'processes' */
+    int i;               /* number of processes read in current iteration */
+
+    msz = (size_t)(PROCSIZE * PROCINFO_INCR);
+    processes = (struct procentry64 *)malloc(msz);
+    if (!processes) {
+        return NULL;
+    }
+    Np = PROCINFO_INCR;
+    p = processes;
+    while ((i = getprocs64(p, PROCSIZE, (struct fdsinfo64 *)NULL, 0, &pid, PROCINFO_INCR)) == PROCINFO_INCR) {
+        np += PROCINFO_INCR;
+        if (np >= Np) {
+            msz = (size_t)(PROCSIZE * (Np + PROCINFO_INCR));
+            processes = (struct procentry64 *)realloc((char *)processes, msz);
+            if (!processes) {
+                return NULL;
+            }
+            Np += PROCINFO_INCR;
+        }
+        p = (struct procentry64 *)((char *)processes + (np * PROCSIZE));
+    }
+
+    /* add the number of processes read in the last iteration */
+    if (i > 0)
+        np += i;
+
+    *num = np;
+    return processes;
+}
+
+/* Derived from psutil to support AIX 7 */
+
 int sigar_proc_port_get(sigar_t *sigar, int protocol,
                         unsigned long port, sigar_pid_t *pidp)
 {
-    struct procsinfo pinfo;
-    struct fdsinfo finfo;
-    pid_t pid = 0;
     int type;
-
     switch (protocol) {
         case SIGAR_NETCONN_TCP:
             type = IPPROTO_TCP;
@@ -2071,102 +2187,88 @@ int sigar_proc_port_get(sigar_t *sigar, int protocol,
           return SIGAR_ENOTIMPL;
     }
 
-    for (;;) {
-        int fd, status;
-        int num = getprocs(&pinfo, sizeof(pinfo),
-                           &finfo, sizeof(finfo),
-                           &pid, 1);
+    int nump = 0;
+    pid32_t found_pid = -1;
+    struct procentry64 *proc;
+    struct fdsinfo64 *fds = (struct fdsinfo64 *)NULL;
+    struct procentry64 * processes = read_process_table(&nump);
+    KA_T fp;
 
-        if (num == 0) {
-            break;
-        }
-
-        if ((pinfo.pi_state == 0) || (pinfo.pi_state == SZOMB)) {
+    /* Loop through processes */
+    for (proc = processes; nump > 0; nump--, proc++) {
+        if (proc->pi_state == 0 || proc->pi_state == SZOMB) {
             continue;
         }
+        pid32_t pid = proc->pi_pid;
+        if (!fds) {
+            fds = (struct fdsinfo64 *)malloc((size_t)FDSINFOSIZE);
+            if (!fds) {
+                return errno;
+            }
+        }
+        if (getprocs64((struct procentry64 *)NULL, PROCSIZE, fds, FDSINFOSIZE, &pid, 1) != 1) {
+            continue;
+        }
+        /* loop over file descriptors */
+        for (int i = 0; i < proc->pi_maxofile; i++) {
+            fp = (KA_T)fds->pi_ufd[i].fp;
+            struct file64 f;
+            struct socket64 s;
+            struct protosw64 p;
+            struct domain d;
+            struct tcpcb64 t;
+            int fam;
 
-        for (fd = 0; fd < pinfo.pi_maxofile; fd++) {
-            struct file file;
-            struct socket socket, *sockp;
-            struct protosw protosw;
-            struct domain domain;
-            struct inpcb inpcb;
-            long ptr;
-
-            if (!(ptr = (long)finfo.pi_ufd[fd].fp)) {
+            if (kread64(sigar, (char *) &f, sizeof(f), fp) != SIGAR_OK) {
                 continue;
             }
 
-            status = kread(sigar, &file, sizeof(file), ptr);
-            if (status != SIGAR_OK) {
+            if (f.f_type != DTYPE_SOCKET)  {
                 continue;
             }
 
-            if (file.f_type != DTYPE_SOCKET) {
+            if (kread64(sigar, (char *) &s, sizeof(s), (KA_T)f.f_data) != SIGAR_OK) {
+                 continue;
+            }
+            if (!s.so_type || ! s.so_proto) {
                 continue;
             }
-
-            if (!(sockp = (struct socket *)file.f_data)) {
+            if (kread64(sigar, (char *) &p, sizeof(p), (KA_T)s.so_proto) != SIGAR_OK) {
                 continue;
             }
-
-            status = kread(sigar, &socket, sizeof(socket), (long)sockp);
-            if (status != SIGAR_OK) {
+            if (!p.pr_domain) {
                 continue;
             }
-
-            if (!(ptr = (long)socket.so_proto)) {
+            if (kread64(sigar, (char *) &d, sizeof(d), (KA_T)p.pr_domain) != SIGAR_OK) {
                 continue;
             }
-
-            status = kread(sigar, &protosw, sizeof(protosw), ptr);
-            if (status != SIGAR_OK) {
-                continue;
+            fam = d.dom_family;
+            if (p.pr_protocol == type && (fam == AF_INET || fam == AF_INET6)) {
+                struct inpcb64 inp;
+                if (kread64(sigar, (char *) &inp, sizeof(inp), (KA_T)s.so_pcb) != SIGAR_OK) {
+                    continue;
+                }
+                if (kread64(sigar, (char *) &t, sizeof(t), (KA_T)inp.inp_ppcb) != SIGAR_OK) {
+                    continue;
+                }
+                if (t.t_state == TCPS_LISTEN && port == (int)ntohs(inp.inp_lport)) {
+                    found_pid = proc->pi_pid;
+                    goto out;
+                }
             }
-
-            if (protosw.pr_protocol != type) {
-                continue;
-            }
-
-            if (!(ptr = (long)protosw.pr_domain)) {
-                continue;
-            }
-
-            status = kread(sigar, &domain, sizeof(domain), ptr);
-            if (status != SIGAR_OK) {
-                continue;
-            }
-
-            if ((domain.dom_family != AF_INET) &&
-                domain.dom_family != AF_INET6)
-            {
-                continue;
-            }
-
-            if (!(ptr = (long)socket.so_pcb)) {
-                continue;
-            }
-
-            status = kread(sigar, &inpcb, sizeof(inpcb), ptr);
-            if (status != SIGAR_OK) {
-                continue;
-            }
-
-            if (sockp != inpcb.inp_socket) {
-                continue;
-            }
-
-            if (inpcb.inp_lport != port) {
-                continue;
-            }
-
-            *pidp = pinfo.pi_pid;
-
-            return SIGAR_OK;
         }
     }
-
-    return ENOENT;
+out:
+    if (fds) {
+        free(fds);
+    }
+    if (found_pid >= 0) {
+        *pidp = found_pid;
+        return SIGAR_OK;
+    }
+    else {
+        return ENOENT;
+    }
 }
 
 int sigar_os_sys_info_get(sigar_t *sigar,
