@@ -221,7 +221,7 @@ struct sigar_t {
 #define sigar_koffsets_init_syspages(sigar, ksp) \
     sigar_koffsets_init(sigar, ksp, syspages)
 
-#define HAVE_READDIR_R
+
 #define HAVE_GETPWNAM_R
 #define HAVE_GETPWUID_R
 
